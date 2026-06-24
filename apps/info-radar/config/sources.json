@@ -1,0 +1,23 @@
+{
+  "profile": {
+    "name": "나",
+    "language": "ko",
+    "interests": [
+      "AI 에이전트, LLM, 오픈소스 모델",
+      "무료 개발 인프라 / 서버리스 / 무료 티어",
+      "스타트업 / 프로덕트 / 개인 개발자 도구"
+    ],
+    "min_score": 55,
+    "max_items_per_run": 40
+  },
+  "notify": {
+    "ntfy_topic_env": "NTFY_TOPIC",
+    "digest_top_n": 8
+  },
+  "sources": [
+    { "type": "rss", "name": "Hacker News (frontpage)", "url": "https://hnrss.org/frontpage" },
+    { "type": "rss", "name": "Hacker News (best)", "url": "https://hnrss.org/best" },
+    { "type": "rss", "name": "GitHub Trending (proxy)", "url": "https://mshibanami.github.io/GitHubTrendingRSS/daily/all.xml" },
+    { "type": "rss", "name": "Lobsters", "url": "https://lobste.rs/rss" }
+  ]
+}

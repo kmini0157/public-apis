@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>📡 Info Radar</title>
+    <!-- Puter.js: keyless, in-browser LLM (puter.ai.chat) -->
+    <script src="https://js.puter.com/v2/"></script>
+    <style>
+      :root {
+        --bg: #0f1115; --card: #181b22; --line: #262b36;
+        --fg: #e8eaed; --mut: #9aa3b2; --accent: #5b9dff; --good: #46d39a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--fg);
+        font: 15px/1.55 -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+      }
+      header {
+        padding: 16px 20px; border-bottom: 1px solid var(--line);
+        display: flex; align-items: center; gap: 12px; position: sticky; top: 0;
+        background: rgba(15,17,21,.92); backdrop-filter: blur(8px); z-index: 5;
+      }
+      header h1 { font-size: 18px; margin: 0; }
+      header .meta { color: var(--mut); font-size: 12px; }
+      .wrap { max-width: 1100px; margin: 0 auto; padding: 18px 20px 80px; }
+      .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+      input, button, select {
+        background: var(--card); color: var(--fg); border: 1px solid var(--line);
+        border-radius: 10px; padding: 9px 12px; font-size: 14px;
+      }
+      input { flex: 1; min-width: 200px; }
+      button { cursor: pointer; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #07121f; font-weight: 600; }
+      .grid { display: grid; gap: 12px; }
+      .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+      .card h3 { margin: 0 0 6px; font-size: 16px; }
+      .card a { color: var(--fg); text-decoration: none; }
+      .card a:hover { color: var(--accent); }
+      .card .sum { color: var(--mut); margin: 6px 0; }
+      .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--mut); }
+      .score { font-weight: 700; color: var(--good); }
+      .tag { background: #20252f; border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+      .empty { color: var(--mut); text-align: center; padding: 60px 0; }
+      /* Chat */
+      .chat { position: fixed; right: 18px; bottom: 18px; width: min(420px, 92vw);
+        background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+        box-shadow: 0 12px 40px rgba(0,0,0,.5); overflow: hidden; }
+      .chat .head { padding: 10px 14px; border-bottom: 1px solid var(--line);
+        display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+      .chat .log { max-height: 46vh; overflow-y: auto; padding: 12px 14px; display: none; }
+      .chat.open .log { display: block; }
+      .chat .foot { display: none; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
+      .chat.open .foot { display: flex; }
+      .msg { margin: 8px 0; }
+      .msg.u { text-align: right; }
+      .msg .b { display: inline-block; padding: 8px 11px; border-radius: 10px; max-width: 85%; text-align: left; white-space: pre-wrap; }
+      .msg.u .b { background: var(--accent); color: #07121f; }
+      .msg.a .b { background: #20252f; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>📡 Info Radar</h1>
+      <span class="meta" id="meta">로딩 중…</span>
+    </header>
+
+    <div class="wrap">
+      <div class="toolbar">
+        <input id="q" placeholder="검색 (제목·요약·태그)…" />
+        <select id="sort">
+          <option value="score">관련도순</option>
+          <option value="time">최신순</option>
+        </select>
+        <select id="minscore">
+          <option value="0">전체</option>
+          <option value="70">70+ 만</option>
+          <option value="85">85+ 만</option>
+        </select>
+      </div>
+      <div class="grid" id="feed"><div class="empty">불러오는 중…</div></div>
+    </div>
+
+    <div class="chat" id="chat">
+      <div class="head" id="chatHead">
+        <strong>💬 내 정보에게 질문</strong><span id="chatToggle">▲</span>
+      </div>
+      <div class="log" id="log">
+        <div class="msg a"><div class="b">수집된 정보를 바탕으로 답합니다. 예: "오늘 AI 관련 핵심만 알려줘"</div></div>
+      </div>
+      <div class="foot">
+        <input id="ask" placeholder="질문…" style="flex:1" />
+        <button class="primary" id="send">전송</button>
+      </div>
+    </div>
+
+    <script>
+      const state = { items: [], updated: null };
+      const $ = (s) => document.querySelector(s);
+
+      async function loadData() {
+        for (const url of ["./items.json", "../data/items.json", "data/items.json"]) {
+          try {
+            const r = await fetch(url, { cache: "no-store" });
+            if (r.ok) return await r.json();
+          } catch {}
+        }
+        return { items: [], updated: null };
+      }
+
+      function render() {
+        const q = $("#q").value.trim().toLowerCase();
+        const sort = $("#sort").value;
+        const min = +$("#minscore").value;
+        let items = state.items.filter((it) => it.score >= min);
+        if (q) {
+          items = items.filter((it) =>
+            (it.title + " " + (it.summary || "") + " " + (it.tags || []).join(" "))
+              .toLowerCase()
+              .includes(q)
+          );
+        }
+        items.sort((a, b) =>
+          sort === "time"
+            ? (b.collected_at || "").localeCompare(a.collected_at || "")
+            : b.score - a.score
+        );
+        const feed = $("#feed");
+        if (!items.length) {
+          feed.innerHTML = '<div class="empty">표시할 항목이 없습니다.</div>';
+          return;
+        }
+        feed.innerHTML = items
+          .map(
+            (it) => `
+          <div class="card">
+            <h3><a href="${it.link}" target="_blank" rel="noopener">${esc(it.title)}</a></h3>
+            <div class="sum">${esc(it.summary || "")}</div>
+            <div class="row">
+              <span class="score">▲ ${it.score}</span>
+              <span>${esc(it.source || "")}</span>
+              ${(it.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}
+              ${it.why ? `<span>· ${esc(it.why)}</span>` : ""}
+            </div>
+          </div>`
+          )
+          .join("");
+      }
+
+      function esc(s) {
+        return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+      }
+
+      // Lightweight keyword retrieval over the collected items for the chat context.
+      function retrieve(query, k = 8) {
+        const terms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 1);
+        const scored = state.items.map((it) => {
+          const hay = (it.title + " " + (it.summary || "") + " " + (it.tags || []).join(" ")).toLowerCase();
+          let s = it.score / 100;
+          for (const t of terms) if (hay.includes(t)) s += 1;
+          return { it, s };
+        });
+        return scored.sort((a, b) => b.s - a.s).slice(0, k).map((x) => x.it);
+      }
+
+      async function ask(question) {
+        addMsg("u", question);
+        const ctx = retrieve(question)
+          .map((it, i) => `[${i + 1}] ${it.title}\n${it.summary}\n${it.link}`)
+          .join("\n\n");
+        const prompt =
+          "너는 사용자의 개인 정보 비서다. 아래 '수집된 정보'만 근거로 한국어로 간결하게 답하라. " +
+          "근거가 없으면 모른다고 말하라. 관련 항목은 번호로 인용하라.\n\n" +
+          "=== 수집된 정보 ===\n" + ctx + "\n\n=== 질문 ===\n" + question;
+        const bubble = addMsg("a", "…");
+        try {
+          if (!window.puter?.ai?.chat) throw new Error("Puter.js 로드 실패");
+          const res = await puter.ai.chat(prompt);
+          const text = typeof res === "string" ? res : res?.message?.content ?? res?.text ?? JSON.stringify(res);
+          bubble.textContent = text;
+        } catch (e) {
+          bubble.textContent = "오류: " + e.message;
+        }
+      }
+
+      function addMsg(role, text) {
+        const log = $("#log");
+        const wrap = document.createElement("div");
+        wrap.className = "msg " + role;
+        const b = document.createElement("div");
+        b.className = "b";
+        b.textContent = text;
+        wrap.appendChild(b);
+        log.appendChild(wrap);
+        log.scrollTop = log.scrollHeight;
+        return b;
+      }
+
+      // Wire up
+      $("#q").addEventListener("input", render);
+      $("#sort").addEventListener("change", render);
+      $("#minscore").addEventListener("change", render);
+      $("#chatHead").addEventListener("click", () => {
+        const c = $("#chat");
+        c.classList.toggle("open");
+        $("#chatToggle").textContent = c.classList.contains("open") ? "▼" : "▲";
+      });
+      $("#send").addEventListener("click", () => {
+        const v = $("#ask").value.trim();
+        if (v) { ask(v); $("#ask").value = ""; }
+      });
+      $("#ask").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#send").click(); });
+
+      (async () => {
+        const data = await loadData();
+        state.items = data.items || [];
+        state.updated = data.updated;
+        $("#meta").textContent =
+          `${state.items.length}건 · 업데이트 ${state.updated ? new Date(state.updated).toLocaleString("ko-KR") : "—"}`;
+        render();
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "info-radar",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Personal information monitoring assistant — server-zero, free-tier only.",
+  "scripts": {
+    "collect": "node src/collect.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
