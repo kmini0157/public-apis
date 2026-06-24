@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>🧠 제2의 뇌</title>
+    <!-- Keyless in-browser LLM for the chat answers -->
+    <script src="https://js.puter.com/v2/"></script>
+    <style>
+      :root {
+        --bg: #0e1014; --panel: #171a21; --card: #1e222b; --line: #2a3040;
+        --fg: #e9ebf0; --mut: #93a0b4; --accent: #7aa2ff; --good: #4fd6a3; --warn: #ffb454;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--fg);
+        font: 15px/1.55 -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif; }
+      header { padding: 14px 20px; border-bottom: 1px solid var(--line);
+        display: flex; align-items: center; gap: 12px; }
+      header h1 { font-size: 18px; margin: 0; }
+      header .status { color: var(--mut); font-size: 12px; margin-left: auto; }
+      .layout { display: grid; grid-template-columns: 360px 1fr; min-height: calc(100vh - 53px); }
+      @media (max-width: 820px) { .layout { grid-template-columns: 1fr; } }
+      .side { border-right: 1px solid var(--line); padding: 16px; overflow-y: auto; }
+      .main { padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
+      h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--mut); margin: 18px 0 8px; }
+      input, textarea, button, select {
+        background: var(--card); color: var(--fg); border: 1px solid var(--line);
+        border-radius: 10px; padding: 9px 12px; font-size: 14px; font-family: inherit; width: 100%; }
+      textarea { resize: vertical; min-height: 64px; }
+      button { cursor: pointer; width: auto; }
+      .row { display: flex; gap: 8px; }
+      .row > * { flex: 1; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #08111f; font-weight: 700; }
+      .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+      .tabs button { flex: 1; background: var(--panel); }
+      .tabs button.active { background: var(--accent); color: #08111f; border-color: var(--accent); }
+      .pane { display: none; flex-direction: column; gap: 8px; }
+      .pane.active { display: flex; }
+      .doc { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+        padding: 10px 12px; margin-bottom: 8px; }
+      .doc .t { font-weight: 600; font-size: 14px; }
+      .doc .m { color: var(--mut); font-size: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .doc .m a { color: var(--mut); }
+      .doc button.del { background: transparent; border: none; color: var(--warn); padding: 2px 6px; }
+      .bar { height: 6px; background: var(--card); border-radius: 999px; overflow: hidden; margin: 8px 0; }
+      .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+      .chatlog { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+        background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-height: 320px; }
+      .msg { max-width: 86%; padding: 10px 13px; border-radius: 12px; white-space: pre-wrap; }
+      .msg.u { align-self: flex-end; background: var(--accent); color: #08111f; }
+      .msg.a { align-self: flex-start; background: var(--card); border: 1px solid var(--line); }
+      .cites { font-size: 12px; color: var(--mut); margin-top: 6px; }
+      .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+        background: var(--card); border: 1px solid var(--line); padding: 10px 16px; border-radius: 10px;
+        opacity: 0; transition: opacity .2s; pointer-events: none; }
+      .toast.show { opacity: 1; }
+      .muted { color: var(--mut); font-size: 12px; }
+      .hits .hit { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+        padding: 8px 10px; margin: 6px 0; font-size: 13px; }
+      .hits .hit .s { color: var(--good); font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>🧠 제2의 뇌</h1>
+      <span class="status" id="status">초기화 중…</span>
+    </header>
+
+    <div class="layout">
+      <aside class="side">
+        <div class="tabs">
+          <button data-tab="url" class="active">URL</button>
+          <button data-tab="note">메모</button>
+          <button data-tab="file">파일</button>
+        </div>
+
+        <div class="pane active" id="pane-url">
+          <input id="url" placeholder="https://… 기사·문서 주소" />
+          <button class="primary" id="addUrl">추가</button>
+          <div class="muted">Jina로 본문을 추출해 저장합니다.</div>
+        </div>
+
+        <div class="pane" id="pane-note">
+          <input id="noteTitle" placeholder="제목 (선택)" />
+          <textarea id="noteText" placeholder="여기에 메모·생각·발췌를 붙여넣으세요…"></textarea>
+          <button class="primary" id="addNote">추가</button>
+        </div>
+
+        <div class="pane" id="pane-file">
+          <input id="file" type="file" accept=".pdf,.txt,.md,.markdown,text/*" />
+          <button class="primary" id="addFile">추가</button>
+          <div class="muted">PDF·TXT·Markdown 지원 (브라우저에서 처리, 업로드 없음).</div>
+        </div>
+
+        <div class="bar" id="progress" style="display:none"><i></i></div>
+        <div class="muted" id="progressText"></div>
+
+        <h2>내 지식 (<span id="docCount">0</span>)</h2>
+        <div id="docs"></div>
+
+        <h2>백업 / 데이터</h2>
+        <div class="row">
+          <button id="export">내보내기</button>
+          <button id="import">가져오기</button>
+          <button id="clear">전체삭제</button>
+        </div>
+        <input id="importFile" type="file" accept="application/json" style="display:none" />
+      </aside>
+
+      <main class="main">
+        <div class="row">
+          <input id="ask" placeholder="내 지식에게 질문… (예: 지난주에 저장한 RAG 관련 핵심만 정리해줘)" />
+          <button class="primary" id="send" style="flex:0 0 auto">질문</button>
+        </div>
+        <div class="chatlog" id="chatlog">
+          <div class="msg a">자료를 추가한 뒤, 모아둔 지식에 대해 무엇이든 물어보세요. 답변은 내 노트만 근거로 합니다.</div>
+        </div>
+        <details>
+          <summary class="muted">🔍 의미 검색 결과 (인용 근거)</summary>
+          <div class="hits" id="hits"></div>
+        </details>
+      </main>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script type="module" src="./js/app.js"></script>
+  </body>
+</html>
