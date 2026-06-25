@@ -61,3 +61,29 @@ export async function fromTextFile(file) {
 export function fromNote(title, text) {
   return { title: title || "메모", source: "note", text };
 }
+
+// Selected text clipped from any web page via the bookmarklet.
+export function fromClip(title, url, text) {
+  const body = url ? `출처: ${url}\n\n${text}` : text;
+  return { title: (title || "웹 클립").slice(0, 200), source: url || "clip", text: body };
+}
+
+// Convert an Info Radar export ({ items: [...] }) into ingestable docs.
+// Each radar item becomes one doc; its title+summary+rationale is the text.
+export function fromRadarItems(json) {
+  const items = Array.isArray(json) ? json : json?.items;
+  if (!Array.isArray(items)) throw new Error("Info Radar 형식이 아닙니다 (items 배열 없음).");
+  return items
+    .filter((it) => it && it.title)
+    .map((it) => {
+      const parts = [it.title];
+      if (it.summary) parts.push(it.summary);
+      if (it.why) parts.push("선정 이유: " + it.why);
+      if (Array.isArray(it.tags) && it.tags.length) parts.push("태그: " + it.tags.join(", "));
+      return {
+        title: it.title.slice(0, 200),
+        source: it.link || `radar:${it.id || it.title}`,
+        text: parts.join("\n\n"),
+      };
+    });
+}

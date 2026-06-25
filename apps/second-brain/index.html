@@ -82,8 +82,12 @@
 
         <div class="pane" id="pane-note">
           <input id="noteTitle" placeholder="제목 (선택)" />
-          <textarea id="noteText" placeholder="여기에 메모·생각·발췌를 붙여넣으세요…"></textarea>
-          <button class="primary" id="addNote">추가</button>
+          <textarea id="noteText" placeholder="여기에 메모·생각·발췌를 붙여넣거나 🎤로 말하세요…"></textarea>
+          <div class="row">
+            <button class="primary" id="addNote">추가</button>
+            <button id="record" style="flex:0 0 auto">🎤 녹음</button>
+          </div>
+          <div class="muted">🎤 녹음은 브라우저 Whisper로 받아쓰기(기기 내 처리, 업로드 없음).</div>
         </div>
 
         <div class="pane" id="pane-file">
@@ -97,6 +101,19 @@
 
         <h2>내 지식 (<span id="docCount">0</span>)</h2>
         <div id="docs"></div>
+
+        <h2>📡 Info Radar 가져오기</h2>
+        <input id="radarUrl" placeholder="items.json 주소 (배포한 info-radar/web)" />
+        <div class="row">
+          <button id="radarFetch">URL에서</button>
+          <button id="radarPick">파일에서</button>
+        </div>
+        <input id="radarFile" type="file" accept="application/json" style="display:none" />
+        <div class="muted">Info Radar가 모은 항목을 제2의 뇌로 합칩니다 (중복 자동 제외).</div>
+
+        <h2>📎 하이라이트 클리퍼</h2>
+        <div class="muted">아래 링크를 북마크바로 드래그하세요. 웹에서 글을 선택하고 누르면 이곳으로 저장됩니다.</div>
+        <p><a id="clipBookmarklet" href="#" style="color:var(--accent);font-weight:700">🧠 제2의 뇌에 담기</a></p>
 
         <h2>백업 / 데이터</h2>
         <div class="row">

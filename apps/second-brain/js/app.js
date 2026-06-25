@@ -5,6 +5,7 @@ import { loadModel, embedBatch } from "./embed.js";
 import * as db from "./db.js";
 import * as ex from "./extract.js";
 import { ask } from "./rag.js";
+import { Recorder, transcribe } from "./voice.js";
 
 const $ = (s) => document.querySelector(s);
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()));
@@ -70,6 +71,54 @@ async function ingest(parsed) {
   showProgress(null);
   await renderDocs();
   toast(`저장 완료: ${parsed.title} (${chunks.length}청크)`);
+}
+
+// Bulk ingest (e.g. Info Radar). Dedupes against already-stored sources,
+// embeds every chunk across all new docs in one pass.
+async function ingestMany(parsedList, label = "항목") {
+  const existing = new Set((await db.getDocs()).map((d) => d.source));
+  const fresh = parsedList.filter((p) => p.source && !existing.has(p.source));
+  if (!fresh.length) {
+    toast("새로 가져올 항목이 없습니다 (모두 중복).");
+    return;
+  }
+  // Build chunk list with provenance back to each doc.
+  const jobs = [];
+  for (const p of fresh) {
+    const chunks = ex.chunkText(p.text);
+    if (!chunks.length) continue;
+    const docId = uid();
+    jobs.push({ docId, parsed: p, chunks });
+  }
+  const flat = jobs.flatMap((j) => j.chunks);
+  showProgress(0, `임베딩 0/${flat.length}…`);
+  const vecs = await embedBatch(flat, (done, total) =>
+    showProgress(done / total, `임베딩 ${done}/${total}…`)
+  );
+  let vi = 0;
+  const now = Date.now();
+  for (const j of jobs) {
+    await db.putDoc({
+      id: j.docId,
+      title: j.parsed.title,
+      source: j.parsed.source,
+      chunkCount: j.chunks.length,
+      addedAt: now,
+    });
+    await db.putChunks(
+      j.chunks.map((text, i) => ({
+        id: `${j.docId}:${i}`,
+        docId: j.docId,
+        title: j.parsed.title,
+        source: j.parsed.source,
+        text,
+        vec: vecs[vi++],
+      }))
+    );
+  }
+  showProgress(null);
+  await renderDocs();
+  toast(`가져옴: ${jobs.length}개 ${label} (${flat.length}청크)`);
 }
 
 async function guardedIngest(fn) {
@@ -204,6 +253,76 @@ function setup() {
     toast("삭제됨");
   });
 
+  // Voice memo: toggle record, then transcribe locally into the note box.
+  const rec = new Recorder();
+  $("#record").addEventListener("click", async () => {
+    const btn = $("#record");
+    if (rec.active) {
+      btn.textContent = "⏳ 변환…";
+      btn.disabled = true;
+      try {
+        const blob = await rec.stop();
+        setStatus("받아쓰는 중…");
+        const text = await transcribe(blob, {
+          progressCb: (p) => {
+            if (p?.status === "progress" && p.total)
+              showProgress(p.loaded / p.total, `Whisper 다운로드 ${(p.progress || 0).toFixed(0)}%`);
+          },
+        });
+        showProgress(null);
+        setStatus("준비됨");
+        const ta = $("#noteText");
+        ta.value = (ta.value ? ta.value + "\n" : "") + (text || "(인식된 음성 없음)");
+        toast("받아쓰기 완료 — 확인 후 추가하세요.");
+      } catch (e) {
+        showProgress(null);
+        setStatus("준비됨");
+        toast("녹음 오류: " + e.message);
+      }
+      btn.textContent = "🎤 녹음";
+      btn.disabled = false;
+    } else {
+      try {
+        await rec.start();
+        btn.textContent = "⏹ 중지";
+      } catch (e) {
+        toast("마이크 접근 실패: " + e.message);
+      }
+    }
+  });
+
+  // Info Radar import — from a URL or a local items.json file.
+  async function importRadar(json) {
+    await guardedIngest(async () => {
+      const parsed = ex.fromRadarItems(json);
+      await ingestMany(parsed, "Radar 항목");
+    });
+  }
+  $("#radarFetch").addEventListener("click", async () => {
+    const url = $("#radarUrl").value.trim();
+    if (!url) return toast("items.json 주소를 입력하세요.");
+    try {
+      setStatus("Radar 불러오는 중…");
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      await importRadar(await res.json());
+    } catch (e) {
+      setStatus("준비됨");
+      toast("Radar 가져오기 실패: " + e.message);
+    }
+  });
+  $("#radarPick").addEventListener("click", () => $("#radarFile").click());
+  $("#radarFile").addEventListener("change", async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try {
+      await importRadar(JSON.parse(await f.text()));
+    } catch (err) {
+      toast("Radar 파일 오류: " + err.message);
+    }
+    e.target.value = "";
+  });
+
   $("#send").addEventListener("click", handleAsk);
   $("#ask").addEventListener("keydown", (e) => {
     if (e.key === "Enter") handleAsk();
@@ -242,8 +361,33 @@ function setup() {
   });
 }
 
+// Build the highlight-clipper bookmarklet, pointing back at this exact app.
+function setupBookmarklet() {
+  const base = location.origin + location.pathname;
+  const code =
+    "javascript:(function(){var t=(window.getSelection?getSelection().toString():'').trim();" +
+    "if(!t){alert('먼저 저장할 텍스트를 선택하세요.');return;}" +
+    "var u=location.href,ti=document.title;" +
+    "window.open('" + base + "#clip='+encodeURIComponent(t)+'&t='+encodeURIComponent(ti)+'&u='+encodeURIComponent(u),'_blank');})()";
+  $("#clipBookmarklet").setAttribute("href", code);
+}
+
+// If opened by the bookmarklet (#clip=...), auto-save the clipped selection.
+async function handleClipFromHash() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  const clip = h.get("clip");
+  if (!clip) return;
+  history.replaceState(null, "", location.pathname + location.search);
+  await guardedIngest(async () => {
+    const parsed = ex.fromClip(h.get("t") || "웹 클립", h.get("u") || "", clip);
+    await ingest(parsed);
+  });
+}
+
 (async function init() {
   setup();
+  setupBookmarklet();
   await renderDocs();
   setStatus("준비됨 (모델은 첫 사용 시 다운로드)");
+  await handleClipFromHash();
 })();
