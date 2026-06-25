@@ -4,6 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>🧠 제2의 뇌</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" />
+    <meta name="theme-color" content="#0e1014" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="제2의 뇌" />
     <!-- Keyless in-browser LLM for the chat answers -->
     <script src="https://js.puter.com/v2/"></script>
     <style>
@@ -109,6 +114,9 @@
           <button id="radarPick">파일에서</button>
         </div>
         <input id="radarFile" type="file" accept="application/json" style="display:none" />
+        <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:4px">
+          <input type="checkbox" id="radarAuto" style="width:auto" /> 열 때마다 이 URL에서 자동 동기화
+        </label>
         <div class="muted">Info Radar가 모은 항목을 제2의 뇌로 합칩니다 (중복 자동 제외).</div>
 
         <h2>📎 하이라이트 클리퍼</h2>

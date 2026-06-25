@@ -47,11 +47,18 @@ Cloudflare Pages / Netlify / Vercel 에 **빌드 명령 없음**, **출력 디�
 3. **질문** — 오른쪽에서 모아둔 지식에 대해 물어보면, 의미검색으로 관련 노트를
    찾아 그것만 근거로 답합니다. "🔍 의미 검색 결과"에서 인용 근거를 확인할 수 있습니다.
 4. **백업** — 내보내기로 JSON 백업, 다른 기기에서 가져오기. (데이터가 갇히지 않음)
+   내보낼 때 **암호를 입력하면 AES‑GCM으로 암호화**(Web Crypto, 기기 내)되어 안전하게 옮길 수 있습니다.
+
+### 📲 앱처럼 설치 (PWA)
+`manifest.webmanifest` + `sw.js`(서비스워커)로 **설치 가능 + 오프라인 셸**을 지원합니다.
+브라우저 주소창의 "설치"로 홈 화면/독에 추가하면 앱처럼 열리고, 셸은 오프라인에서도 뜹니다.
+(임베딩 모델은 transformers.js가 자체 캐시 → 두 번째부터 오프라인 임베딩 가능. URL 추출·AI 답변만 온라인 필요.)
 
 ### 📡 Info Radar 연동
 같은 무료 스택의 [`apps/info-radar`](../info-radar)가 자동 수집한 항목을 한 번에 합칩니다.
 - **URL에서**: 배포한 info-radar의 `web/items.json` 주소를 넣고 가져오기
 - **파일에서**: `items.json`을 직접 선택
+- **열 때마다 자동 동기화**: 체크하면 URL을 기억해 앱을 열 때 + 30분마다 새 항목만 자동 병합
 - 이미 가져온 항목(같은 링크)은 자동으로 건너뜁니다.
 → *Radar가 모으고(자동) → 제2의 뇌가 의미검색·대화(수동)* 로 두 도구가 한 흐름이 됩니다.
 
@@ -67,13 +74,17 @@ Cloudflare Pages / Netlify / Vercel 에 **빌드 명령 없음**, **출력 디�
 
 ```
 apps/second-brain/
-├─ index.html        # UI
+├─ index.html            # UI
+├─ manifest.webmanifest  # PWA 설치 정보
+├─ sw.js                 # 서비스워커 (오프라인 셸 캐시)
+├─ icon.svg              # 앱 아이콘
 └─ js/
    ├─ app.js         # UI 컨트롤러 / 와이어링
    ├─ db.js          # IndexedDB (docs / chunks)
    ├─ embed.js       # transformers.js 로컬 임베딩 + 코사인
    ├─ extract.js     # URL(Jina)·PDF(pdf.js)·텍스트·Radar·클립 → 청크
    ├─ voice.js       # 마이크 녹음 + Whisper(브라우저) 받아쓰기
+   ├─ crypto.js      # 암호화 백업 (Web Crypto AES-GCM)
    └─ rag.js         # 의미검색 + Puter.js 답변
 ```
 
@@ -84,6 +95,6 @@ apps/second-brain/
 - 모두 키 없이 동작하며, 데이터 소유권은 본인에게 있습니다(JSON 백업 제공).
 
 ## 확장 아이디어 (다음)
-- **공유 동기화**: 선택적으로 Supabase/Turso에 암호화 백업(여러 기기 공유).
 - **자동 태깅/클러스터링**: 임베딩으로 비슷한 노트 묶어 보여주기.
-- **Radar 자동 동기화**: 배포된 `items.json`을 주기적으로 폴링해 새 항목만 합치기.
+- **다기기 실시간 공유**: 암호화 백업을 선택적으로 Supabase/Turso 무료 티어에 올려 동기화.
+- **답변 스트리밍**: Puter.js 스트리밍으로 토큰 단위 출력.

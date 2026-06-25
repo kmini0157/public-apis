@@ -1,0 +1,13 @@
+{
+  "name": "제2의 뇌",
+  "short_name": "제2의 뇌",
+  "description": "내 기기에 비공개로 쌓는 개인 지식 비서 — 의미검색 + AI 대화",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0e1014",
+  "theme_color": "#0e1014",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

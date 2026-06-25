@@ -6,6 +6,14 @@ import * as db from "./db.js";
 import * as ex from "./extract.js";
 import { ask } from "./rag.js";
 import { Recorder, transcribe } from "./voice.js";
+import { encryptJSON, decryptJSON, isEncrypted } from "./crypto.js";
+
+const LS = {
+  get url() { return localStorage.getItem("sb.radarUrl") || ""; },
+  set url(v) { localStorage.setItem("sb.radarUrl", v || ""); },
+  get auto() { return localStorage.getItem("sb.radarAuto") === "1"; },
+  set auto(v) { localStorage.setItem("sb.radarAuto", v ? "1" : "0"); },
+};
 
 const $ = (s) => document.querySelector(s);
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()));
@@ -292,15 +300,21 @@ function setup() {
   });
 
   // Info Radar import — from a URL or a local items.json file.
+  // ingestMany only loads the embedding model when there are fresh items,
+  // so auto-sync on open stays cheap when nothing changed.
   async function importRadar(json) {
-    await guardedIngest(async () => {
+    try {
       const parsed = ex.fromRadarItems(json);
       await ingestMany(parsed, "Radar 항목");
-    });
+    } catch (e) {
+      showProgress(null);
+      toast("Radar 오류: " + e.message);
+    } finally {
+      setStatus("준비됨");
+    }
   }
-  $("#radarFetch").addEventListener("click", async () => {
-    const url = $("#radarUrl").value.trim();
-    if (!url) return toast("items.json 주소를 입력하세요.");
+  async function syncRadar(url, { silent = false } = {}) {
+    if (!url) return !silent && toast("items.json 주소를 입력하세요.");
     try {
       setStatus("Radar 불러오는 중…");
       const res = await fetch(url);
@@ -308,9 +322,15 @@ function setup() {
       await importRadar(await res.json());
     } catch (e) {
       setStatus("준비됨");
-      toast("Radar 가져오기 실패: " + e.message);
+      if (!silent) toast("Radar 가져오기 실패: " + e.message);
     }
+  }
+  $("#radarFetch").addEventListener("click", () => {
+    LS.url = $("#radarUrl").value.trim();
+    syncRadar(LS.url);
   });
+  $("#radarUrl").addEventListener("change", () => (LS.url = $("#radarUrl").value.trim()));
+  $("#radarAuto").addEventListener("change", (e) => (LS.auto = e.target.checked));
   $("#radarPick").addEventListener("click", () => $("#radarFile").click());
   $("#radarFile").addEventListener("change", async (e) => {
     const f = e.target.files[0];
@@ -329,13 +349,20 @@ function setup() {
   });
 
   $("#export").addEventListener("click", async () => {
-    const data = await db.exportAll();
+    let data = await db.exportAll();
+    const pass = prompt("백업 암호를 입력하면 암호화합니다.\n(비워두면 일반 JSON으로 저장)", "");
+    if (pass === null) return; // cancelled
+    let ext = "json";
+    if (pass) {
+      data = await encryptJSON(data, pass);
+      ext = "sbenc.json";
+    }
     const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `second-brain-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `second-brain-backup-${new Date().toISOString().slice(0, 10)}.${ext}`;
     a.click();
-    toast("백업 내보냄");
+    toast(pass ? "🔐 암호화 백업 내보냄" : "백업 내보냄");
   });
 
   $("#import").addEventListener("click", () => $("#importFile").click());
@@ -343,7 +370,12 @@ function setup() {
     const f = e.target.files[0];
     if (!f) return;
     try {
-      const data = JSON.parse(await f.text());
+      let data = JSON.parse(await f.text());
+      if (isEncrypted(data)) {
+        const pass = prompt("이 백업은 암호화되어 있습니다. 암호를 입력하세요.", "");
+        if (pass === null) return;
+        data = await decryptJSON(data, pass);
+      }
       const r = await db.importAll(data);
       await renderDocs();
       toast(`가져옴: 문서 ${r.docs} · 청크 ${r.chunks}`);
@@ -359,6 +391,14 @@ function setup() {
     await renderDocs();
     toast("전체 삭제됨");
   });
+
+  // Restore Radar settings, then auto-sync now + every 30 min while open.
+  $("#radarUrl").value = LS.url;
+  $("#radarAuto").checked = LS.auto;
+  if (LS.auto && LS.url) {
+    syncRadar(LS.url, { silent: true });
+    setInterval(() => LS.auto && LS.url && syncRadar(LS.url, { silent: true }), 30 * 60 * 1000);
+  }
 }
 
 // Build the highlight-clipper bookmarklet, pointing back at this exact app.
@@ -390,4 +430,8 @@ async function handleClipFromHash() {
   await renderDocs();
   setStatus("준비됨 (모델은 첫 사용 시 다운로드)");
   await handleClipFromHash();
+  // Register the service worker for offline / installable app shell.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js").catch(() => {});
+  }
 })();
