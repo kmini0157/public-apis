@@ -15,6 +15,9 @@ URL·메모·PDF를 넣어두면 **로컬 임베딩으로 의미검색**하고, 
 | PDF 파싱 | [pdf.js](https://mozilla.github.io/pdf.js/) (브라우저) | 무료·키X |
 | 음성 받아쓰기 | [transformers.js](https://huggingface.co/docs/transformers.js) `whisper-tiny` (브라우저 로컬) | 무료·키X |
 | Info Radar 연동 | `apps/info-radar` `items.json` 가져오기 | 무료 |
+| 자동 태깅/클러스터 | 키워드 추출 + 임베딩 코사인 클러스터링 (로컬) | 무료·키X |
+| 답변 스트리밍 | Puter.js `chat(.., {stream:true})` | 무료·키X |
+| 다기기 동기화 | Supabase REST(무료 티어) + E2E 암호화 | 무료(설정 필요) |
 
 > 백엔드가 없습니다. 정적 파일만 호스팅하면 끝(또는 그냥 로컬에서 열기).
 
@@ -45,9 +48,41 @@ Cloudflare Pages / Netlify / Vercel 에 **빌드 명령 없음**, **출력 디�
 2. 추가하면 텍스트를 청크로 나눠 **로컬에서 임베딩** 후 IndexedDB에 저장합니다.
    (첫 사용 시 임베딩 모델 ~25MB를 한 번 다운로드, 이후 캐시되어 즉시 동작)
 3. **질문** — 오른쪽에서 모아둔 지식에 대해 물어보면, 의미검색으로 관련 노트를
-   찾아 그것만 근거로 답합니다. "🔍 의미 검색 결과"에서 인용 근거를 확인할 수 있습니다.
+   찾아 그것만 근거로 **토큰 단위로 스트리밍**하며 답합니다. "🔍 의미 검색 결과"에서
+   인용 근거를, "🗂 비슷한 노트 묶음"에서 **자동 클러스터**를 볼 수 있습니다.
+   각 노트에는 내용에서 뽑은 **자동 태그**가 칩으로 표시됩니다.
 4. **백업** — 내보내기로 JSON 백업, 다른 기기에서 가져오기. (데이터가 갇히지 않음)
    내보낼 때 **암호를 입력하면 AES‑GCM으로 암호화**(Web Crypto, 기기 내)되어 안전하게 옮길 수 있습니다.
+
+### 🗂 자동 태깅 / 클러스터링
+- **자동 태그**: 노트를 추가할 때 본문에서 핵심 키워드를 뽑아 태그 칩으로 답니다(로컬, 키 없음).
+- **클러스터**: "🗂 비슷한 노트 묶음"의 *묶기/새로고침*을 누르면, 각 노트의 임베딩을
+  평균낸 문서 벡터를 코사인 유사도로 묶어 비슷한 노트를 자동 그룹화합니다. 묶음 이름은
+  구성원의 공통 태그로 붙습니다.
+
+### 🔄 다기기 실시간 동기화 (E2E 암호화)
+여러 기기에서 같은 제2의 뇌를 공유합니다. 백엔드는 **암호문만** 보관하고, 암호는
+기기 밖으로 나가지 않습니다. **같은 공유 암호**를 입력한 기기끼리 자동으로 같은 공간에 묶입니다.
+
+**무료 Supabase 프로젝트 1회 설정** (SQL Editor에 붙여넣기):
+```sql
+create table if not exists brain_sync (
+  space text primary key,
+  blob jsonb not null,
+  updated_at timestamptz not null default now()
+);
+alter table brain_sync enable row level security;
+-- 데이터가 E2E 암호화되어 있으므로(공간 id도 암호 해시) 익명 접근을 허용해도
+-- 평문은 노출되지 않습니다. 개인용 기준의 트레이드오프입니다.
+create policy "anon rw brain_sync" on brain_sync
+  for all to anon using (true) with check (true);
+```
+그 다음 앱 사이드바 **"🔄 다기기 동기화"** 에 **Project URL · anon public key · 공유 암호**를
+입력하고 *연결·동기화 시작*. 이후 다른 기기에서도 같은 3가지를 넣으면 자동 병합됩니다.
+- 로컬 변경은 1.5초 디바운스 후 자동 업로드, 원격 변경은 8초 폴링으로 받아옵니다.
+- push 전에 먼저 원격을 병합하므로 동시 편집의 덮어쓰기를 줄입니다.
+- **주의**: 병합은 id 기준 합집합(최신 우선)이라 **삭제는 다른 기기로 전파되지 않습니다**(v1).
+  암호·anon key는 편의를 위해 브라우저 localStorage에 저장됩니다(공용 PC에선 비권장).
 
 ### 📲 앱처럼 설치 (PWA)
 `manifest.webmanifest` + `sw.js`(서비스워커)로 **설치 가능 + 오프라인 셸**을 지원합니다.
@@ -81,11 +116,14 @@ apps/second-brain/
 └─ js/
    ├─ app.js         # UI 컨트롤러 / 와이어링
    ├─ db.js          # IndexedDB (docs / chunks)
-   ├─ embed.js       # transformers.js 로컬 임베딩 + 코사인
+   ├─ embed.js       # transformers.js 로컬 임베딩
+   ├─ vec.js         # 순수 벡터 연산(코사인)
    ├─ extract.js     # URL(Jina)·PDF(pdf.js)·텍스트·Radar·클립 → 청크
    ├─ voice.js       # 마이크 녹음 + Whisper(브라우저) 받아쓰기
-   ├─ crypto.js      # 암호화 백업 (Web Crypto AES-GCM)
-   └─ rag.js         # 의미검색 + Puter.js 답변
+   ├─ crypto.js      # 암호화 (Web Crypto AES-GCM)
+   ├─ cluster.js     # 자동 태그 + 임베딩 클러스터링
+   ├─ sync.js        # 다기기 E2E 암호화 동기화 (Supabase REST)
+   └─ rag.js         # 의미검색 + Puter.js 스트리밍 답변
 ```
 
 ## 프라이버시
@@ -95,6 +133,6 @@ apps/second-brain/
 - 모두 키 없이 동작하며, 데이터 소유권은 본인에게 있습니다(JSON 백업 제공).
 
 ## 확장 아이디어 (다음)
-- **자동 태깅/클러스터링**: 임베딩으로 비슷한 노트 묶어 보여주기.
-- **다기기 실시간 공유**: 암호화 백업을 선택적으로 Supabase/Turso 무료 티어에 올려 동기화.
-- **답변 스트리밍**: Puter.js 스트리밍으로 토큰 단위 출력.
+- **삭제 전파(tombstone)**: 동기화에서 삭제도 다른 기기로 반영.
+- **클러스터 임계값 슬라이더**: 묶음 민감도를 UI에서 조절.
+- **Supabase Realtime**: 폴링 대신 websocket 구독으로 즉시 반영.

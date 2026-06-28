@@ -2,6 +2,9 @@
 // Model: Xenova/all-MiniLM-L6-v2 -> 384-dim normalized vectors.
 
 import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2";
+import { cosine } from "./vec.js";
+
+export { cosine };
 
 // Cache the downloaded model in the browser so subsequent loads are instant.
 env.allowLocalModels = false;
@@ -43,12 +46,4 @@ export async function embedBatch(texts, onEach) {
     if (onEach) onEach(i + 1, texts.length);
   }
   return out;
-}
-
-// Vectors are normalized, so dot product == cosine similarity.
-export function cosine(a, b) {
-  let s = 0;
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) s += a[i] * b[i];
-  return s;
 }

@@ -7,12 +7,25 @@ import * as ex from "./extract.js";
 import { ask } from "./rag.js";
 import { Recorder, transcribe } from "./voice.js";
 import { encryptJSON, decryptJSON, isEncrypted } from "./crypto.js";
+import { keywords, docVectors, clusterDocs, clusterLabel } from "./cluster.js";
+import { Sync } from "./sync.js";
 
+const lsGet = (k, d = "") => localStorage.getItem(k) ?? d;
+const lsSet = (k, v) => localStorage.setItem(k, v ?? "");
 const LS = {
-  get url() { return localStorage.getItem("sb.radarUrl") || ""; },
-  set url(v) { localStorage.setItem("sb.radarUrl", v || ""); },
-  get auto() { return localStorage.getItem("sb.radarAuto") === "1"; },
-  set auto(v) { localStorage.setItem("sb.radarAuto", v ? "1" : "0"); },
+  get url() { return lsGet("sb.radarUrl"); },
+  set url(v) { lsSet("sb.radarUrl", v); },
+  get auto() { return lsGet("sb.radarAuto") === "1"; },
+  set auto(v) { lsSet("sb.radarAuto", v ? "1" : "0"); },
+  // Multi-device sync config (stored locally; backend only sees ciphertext).
+  get syncUrl() { return lsGet("sb.syncUrl"); },
+  set syncUrl(v) { lsSet("sb.syncUrl", v); },
+  get syncKey() { return lsGet("sb.syncKey"); },
+  set syncKey(v) { lsSet("sb.syncKey", v); },
+  get syncPass() { return lsGet("sb.syncPass"); },
+  set syncPass(v) { lsSet("sb.syncPass", v); },
+  get syncOn() { return lsGet("sb.syncOn") === "1"; },
+  set syncOn(v) { lsSet("sb.syncOn", v ? "1" : "0"); },
 };
 
 const $ = (s) => document.querySelector(s);
@@ -65,6 +78,7 @@ async function ingest(parsed) {
     source: parsed.source,
     chunkCount: chunks.length,
     addedAt: now,
+    tags: keywords(parsed.text),
   });
   await db.putChunks(
     chunks.map((text, i) => ({
@@ -78,6 +92,7 @@ async function ingest(parsed) {
   );
   showProgress(null);
   await renderDocs();
+  maybeAutoPush();
   toast(`저장 완료: ${parsed.title} (${chunks.length}청크)`);
 }
 
@@ -112,6 +127,7 @@ async function ingestMany(parsedList, label = "항목") {
       source: j.parsed.source,
       chunkCount: j.chunks.length,
       addedAt: now,
+      tags: keywords(j.parsed.text),
     });
     await db.putChunks(
       j.chunks.map((text, i) => ({
@@ -126,6 +142,7 @@ async function ingestMany(parsedList, label = "항목") {
   }
   showProgress(null);
   await renderDocs();
+  maybeAutoPush();
   toast(`가져옴: ${jobs.length}개 ${label} (${flat.length}청크)`);
 }
 
@@ -163,10 +180,14 @@ async function renderDocs() {
         const src = isUrl
           ? `<a href="${esc(d.source)}" target="_blank" rel="noopener">${esc(new URL(d.source).hostname)}</a>`
           : esc(d.source || "");
+        const tags = (d.tags || []).length
+          ? `<div class="tags">${d.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div>`
+          : "";
         return `<div class="doc">
           <div class="t">${esc(d.title)}</div>
           <div class="m">${src} · ${d.chunkCount || 0}청크 · ${new Date(d.addedAt).toLocaleDateString("ko-KR")}
             <button class="del" data-id="${d.id}" title="삭제">✕</button></div>
+          ${tags}
         </div>`;
       })
       .join("") || '<div class="muted">아직 없음. 왼쪽 위에서 추가하세요.</div>';
@@ -182,6 +203,89 @@ function addMsg(role, text) {
   return div;
 }
 
+// ---- Clustering (auto-grouping of similar notes) ------------------------
+
+async function renderClusters() {
+  $("#clusterInfo").textContent = "분석 중…";
+  const [docs, vecs] = await Promise.all([db.getDocs(), docVectors()]);
+  const tagsById = new Map(docs.map((d) => [d.id, d.tags || []]));
+  const groups = clusterDocs(vecs);
+  const multi = groups.filter((g) => g.length > 1);
+  const singles = groups.filter((g) => g.length === 1).flat();
+  $("#clusterInfo").textContent = `${vecs.length}개 노트 · ${multi.length}개 묶음 · 단독 ${singles.length}`;
+  if (!vecs.length) {
+    $("#clusters").innerHTML = '<div class="muted">먼저 노트를 추가하세요.</div>';
+    return;
+  }
+  const member = (m) => {
+    const isUrl = /^https?:/.test(m.source || "");
+    const link = isUrl ? ` <a href="${esc(m.source)}" target="_blank" rel="noopener">↗</a>` : "";
+    return `<div class="member">• ${esc(m.title)}${link}</div>`;
+  };
+  let html = multi
+    .map(
+      (g) =>
+        `<div class="cluster"><h4>${esc(clusterLabel(g, tagsById))} <span class="muted">(${g.length})</span></h4>${g
+          .map(member)
+          .join("")}</div>`
+    )
+    .join("");
+  if (singles.length) {
+    html += `<div class="cluster"><h4 class="muted">단독 노트 <span class="muted">(${singles.length})</span></h4>${singles
+      .map(member)
+      .join("")}</div>`;
+  }
+  $("#clusters").innerHTML = html || '<div class="muted">묶을 노트가 부족합니다.</div>';
+}
+
+// ---- Multi-device sync state -------------------------------------------
+
+let sync = null;
+let pushTimer = null;
+
+// Debounced push after local changes when sync is active.
+function maybeAutoPush() {
+  if (!sync) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => {
+    sync
+      .push()
+      .then(() => setSyncStatus("동기화됨 ✓"))
+      .catch((e) => setSyncStatus("올리기 실패: " + e.message));
+  }, 1500);
+}
+
+function setSyncStatus(s) {
+  $("#syncStatus").textContent = s;
+}
+
+async function startSync({ silent = false } = {}) {
+  try {
+    sync = new Sync({
+      url: LS.syncUrl,
+      anonKey: LS.syncKey,
+      passphrase: LS.syncPass,
+      onChange: async () => {
+        await renderDocs();
+        toast("다른 기기 변경사항을 받았습니다.");
+      },
+    });
+    await sync.init();
+    setSyncStatus("연결됨 · 받는 중…");
+    await sync.pull();
+    await renderDocs();
+    await sync.push(); // share what this device has
+    sync.start();
+    LS.syncOn = true;
+    setSyncStatus("동기화 중 ✓ (자동)");
+  } catch (e) {
+    sync = null;
+    LS.syncOn = false;
+    setSyncStatus("연결 실패: " + e.message);
+    if (!silent) toast("동기화 연결 실패: " + e.message);
+  }
+}
+
 // ---- Chat ---------------------------------------------------------------
 
 async function handleAsk() {
@@ -190,10 +294,15 @@ async function handleAsk() {
   $("#ask").value = "";
   addMsg("u", q);
   const bubble = addMsg("a", "생각 중…");
+  const log = $("#chatlog");
   try {
     await loadModel();
-    const { answer, hits } = await ask(q);
-    bubble.textContent = answer;
+    const { hits } = await ask(q, {
+      onToken: (full) => {
+        bubble.textContent = full;
+        log.scrollTop = log.scrollHeight;
+      },
+    });
     $("#hits").innerHTML = hits
       .map(
         (h, i) =>
@@ -392,6 +501,36 @@ function setup() {
     toast("전체 삭제됨");
   });
 
+  // Clustering view.
+  $("#clusterRefresh").addEventListener("click", async () => {
+    await loadModel(); // ensure vectors exist / model warm
+    await renderClusters();
+  });
+
+  // Multi-device sync controls.
+  $("#syncUrl").value = LS.syncUrl;
+  $("#syncKey").value = LS.syncKey;
+  $("#syncPass").value = LS.syncPass;
+  $("#syncConnect").addEventListener("click", async () => {
+    LS.syncUrl = $("#syncUrl").value.trim();
+    LS.syncKey = $("#syncKey").value.trim();
+    LS.syncPass = $("#syncPass").value;
+    if (sync) sync.stop();
+    setSyncStatus("연결 중…");
+    await startSync();
+  });
+  $("#syncPush").addEventListener("click", async () => {
+    if (!sync) return toast("먼저 연결하세요.");
+    setSyncStatus("올리는 중…");
+    try {
+      await sync.push();
+      setSyncStatus("동기화됨 ✓");
+      toast("올렸습니다.");
+    } catch (e) {
+      setSyncStatus("올리기 실패: " + e.message);
+    }
+  });
+
   // Restore Radar settings, then auto-sync now + every 30 min while open.
   $("#radarUrl").value = LS.url;
   $("#radarAuto").checked = LS.auto;
@@ -430,6 +569,10 @@ async function handleClipFromHash() {
   await renderDocs();
   setStatus("준비됨 (모델은 첫 사용 시 다운로드)");
   await handleClipFromHash();
+  // Resume multi-device sync if it was on and configured.
+  if (LS.syncOn && LS.syncUrl && LS.syncKey && LS.syncPass) {
+    startSync({ silent: true });
+  }
   // Register the service worker for offline / installable app shell.
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
