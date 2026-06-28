@@ -8,12 +8,23 @@ import { encryptJSON, decryptJSON } from "./crypto.js";
 
 const te = new TextEncoder();
 
+// Derive the space id with the SAME key-stretching used for encryption, so an
+// observer of the (logged/stored) space value can't cheaply brute-force the
+// passphrase. A FIXED app-domain salt keeps the id deterministic across devices
+// that share the passphrase, while PBKDF2's cost makes each guess as expensive
+// as attacking the ciphertext itself.
+const SPACE_SALT = te.encode("second-brain:space-id:v2");
+
 async function spaceIdFrom(passphrase) {
-  const h = await crypto.subtle.digest("SHA-256", te.encode("second-brain:" + passphrase));
-  return [...new Uint8Array(h)]
-    .slice(0, 16)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  const base = await crypto.subtle.importKey("raw", te.encode(passphrase), "PBKDF2", false, [
+    "deriveBits",
+  ]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: SPACE_SALT, iterations: 150000, hash: "SHA-256" },
+    base,
+    128
+  );
+  return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export class Sync {
@@ -25,6 +36,7 @@ export class Sync {
     this.space = null;
     this.lastUpdated = null; // server timestamp of the last row we applied/wrote
     this.timer = null;
+    this._pulling = null; // in-flight pull() promise, used as a lock
   }
 
   headers(extra) {
@@ -42,32 +54,79 @@ export class Sync {
     return this.space;
   }
 
-  // Fetch the remote blob; if newer than what we last applied, decrypt + merge.
+  // Cheap existence/timestamp probe that does NOT decrypt — used to decide
+  // whether a failed pull means "remote absent" (safe to create) vs
+  // "remote exists but unreadable" (must not clobber).
+  async _remoteMeta() {
+    const r = await fetch(
+      `${this.url}/rest/v1/brain_sync?space=eq.${this.space}&select=updated_at`,
+      { headers: this.headers() }
+    );
+    if (!r.ok) throw new Error("동기화 조회 실패 (HTTP " + r.status + ")");
+    const rows = await r.json();
+    return rows.length ? rows[0] : null;
+  }
+
+  // Deduped pull: concurrent callers (the interval tick and push()) share one
+  // in-flight request, so the freshness gate can't race and importAll/onChange
+  // run at most once per remote change.
   async pull() {
+    if (this._pulling) return this._pulling;
+    this._pulling = this._pullOnce().finally(() => {
+      this._pulling = null;
+    });
+    return this._pulling;
+  }
+
+  async _pullOnce() {
     const r = await fetch(
       `${this.url}/rest/v1/brain_sync?space=eq.${this.space}&select=blob,updated_at`,
       { headers: this.headers() }
     );
     if (!r.ok) throw new Error("동기화 받기 실패 (HTTP " + r.status + ")");
     const rows = await r.json();
-    if (!rows.length) return { applied: false };
+    if (!rows.length) return { applied: false, remoteExisted: false };
     const row = rows[0];
-    if (this.lastUpdated && row.updated_at <= this.lastUpdated) return { applied: false };
+    if (this.lastUpdated && row.updated_at <= this.lastUpdated)
+      return { applied: false, remoteExisted: true };
     const data = await decryptJSON(row.blob, this.pass);
     const res = await importAll(data);
     this.lastUpdated = row.updated_at;
-    return { applied: true, ...res };
+    return { applied: true, remoteExisted: true, ...res };
   }
 
   // Merge remote first (avoid clobbering a peer's concurrent edits), then
-  // upload the union of everything this device now holds.
+  // upload the union of everything this device now holds. Never overwrites a
+  // remote row we failed to merge, and never replaces a remote with an empty
+  // local export.
   async push() {
+    let pulled = null;
     try {
-      await this.pull();
-    } catch {
-      /* offline / empty — push what we have */
+      pulled = await this.pull();
+    } catch (e) {
+      // pull failed: distinguish "remote genuinely absent" (safe to create)
+      // from "remote exists but we couldn't read/decrypt it" (must not clobber).
+      let meta = null;
+      try {
+        meta = await this._remoteMeta();
+      } catch {
+        throw e; // indeterminate (offline / error) — abort instead of clobbering
+      }
+      if (meta) {
+        throw new Error(
+          "원격 데이터를 먼저 병합하지 못해 올리기를 중단했습니다. 암호·연결을 확인하세요. (" + e.message + ")"
+        );
+      }
+      // remote genuinely absent -> safe to create it from local data
     }
-    const blob = await encryptJSON(await exportAll(), this.pass);
+
+    const local = await exportAll();
+    // Guard: never replace an existing remote row with a near-empty local export.
+    if (!local.docs.length && pulled && pulled.remoteExisted) {
+      return { ok: true, skipped: true };
+    }
+
+    const blob = await encryptJSON(local, this.pass);
     const body = JSON.stringify([
       { space: this.space, blob, updated_at: new Date().toISOString() },
     ]);
@@ -76,16 +135,20 @@ export class Sync {
       headers: this.headers({ Prefer: "resolution=merge-duplicates,return=representation" }),
       body,
     });
-    if (!r.ok) throw new Error("동기화 올리기 실패 (HTTP " + r.status + ") " + (await r.text()).slice(0, 140));
+    if (!r.ok)
+      throw new Error("동기화 올리기 실패 (HTTP " + r.status + ") " + (await r.text()).slice(0, 140));
     const rows = await r.json().catch(() => []);
     if (rows[0]?.updated_at) this.lastUpdated = rows[0].updated_at;
     return { ok: true };
   }
 
   // Near-real-time: poll for remote changes and apply them as they arrive.
+  // Skip a tick if a pull is already running so overlapping ticks can't
+  // double-apply / double-notify.
   start(intervalMs = 8000) {
     this.stop();
     this.timer = setInterval(async () => {
+      if (this._pulling) return;
       try {
         const r = await this.pull();
         if (r.applied) this.onChange(r);

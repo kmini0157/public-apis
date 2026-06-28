@@ -26,6 +26,9 @@ const LS = {
   set syncPass(v) { lsSet("sb.syncPass", v); },
   get syncOn() { return lsGet("sb.syncOn") === "1"; },
   set syncOn(v) { lsSet("sb.syncOn", v ? "1" : "0"); },
+  // Whether to persist the passphrase on this device (off => session-only).
+  get syncRemember() { return lsGet("sb.syncRemember", "1") === "1"; },
+  set syncRemember(v) { lsSet("sb.syncRemember", v ? "1" : "0"); },
 };
 
 const $ = (s) => document.querySelector(s);
@@ -99,8 +102,15 @@ async function ingest(parsed) {
 // Bulk ingest (e.g. Info Radar). Dedupes against already-stored sources,
 // embeds every chunk across all new docs in one pass.
 async function ingestMany(parsedList, label = "항목") {
-  const existing = new Set((await db.getDocs()).map((d) => d.source));
-  const fresh = parsedList.filter((p) => p.source && !existing.has(p.source));
+  // Dedup against already-stored sources AND within this batch itself.
+  const seen = new Set((await db.getDocs()).map((d) => d.source));
+  const fresh = [];
+  for (const p of parsedList) {
+    if (p.source && !seen.has(p.source)) {
+      seen.add(p.source);
+      fresh.push(p);
+    }
+  }
   if (!fresh.length) {
     toast("새로 가져올 항목이 없습니다 (모두 중복).");
     return;
@@ -243,13 +253,17 @@ async function renderClusters() {
 let sync = null;
 let pushTimer = null;
 
-// Debounced push after local changes when sync is active.
+// Debounced push after local changes when sync is active. Pin the push to the
+// exact connection that was live when the change happened: if sync was stopped
+// or replaced (reconnect) before the timer fires, skip — never push through a
+// different instance or dereference a null one.
 function maybeAutoPush() {
-  if (!sync) return;
+  const s = sync;
+  if (!s) return;
   clearTimeout(pushTimer);
   pushTimer = setTimeout(() => {
-    sync
-      .push()
+    if (sync !== s) return;
+    s.push()
       .then(() => setSyncStatus("동기화됨 ✓"))
       .catch((e) => setSyncStatus("올리기 실패: " + e.message));
   }, 1500);
@@ -259,12 +273,14 @@ function setSyncStatus(s) {
   $("#syncStatus").textContent = s;
 }
 
-async function startSync({ silent = false } = {}) {
+async function startSync({ silent = false, pass } = {}) {
   try {
     sync = new Sync({
       url: LS.syncUrl,
       anonKey: LS.syncKey,
-      passphrase: LS.syncPass,
+      // Use the explicit passphrase (manual connect) or the remembered one
+      // (auto-resume). When "remember" is off, LS.syncPass is empty by design.
+      passphrase: pass != null ? pass : LS.syncPass,
       onChange: async () => {
         await renderDocs();
         toast("다른 기기 변경사항을 받았습니다.");
@@ -511,13 +527,18 @@ function setup() {
   $("#syncUrl").value = LS.syncUrl;
   $("#syncKey").value = LS.syncKey;
   $("#syncPass").value = LS.syncPass;
+  $("#syncRemember").checked = LS.syncRemember;
   $("#syncConnect").addEventListener("click", async () => {
+    const remember = $("#syncRemember").checked;
+    LS.syncRemember = remember;
     LS.syncUrl = $("#syncUrl").value.trim();
     LS.syncKey = $("#syncKey").value.trim();
-    LS.syncPass = $("#syncPass").value;
+    // Only persist the passphrase when the user opts in; otherwise keep it in
+    // memory for this session only (the Sync instance still holds it).
+    LS.syncPass = remember ? $("#syncPass").value : "";
     if (sync) sync.stop();
     setSyncStatus("연결 중…");
-    await startSync();
+    await startSync({ pass: $("#syncPass").value });
   });
   $("#syncPush").addEventListener("click", async () => {
     if (!sync) return toast("먼저 연결하세요.");
@@ -551,14 +572,20 @@ function setupBookmarklet() {
   $("#clipBookmarklet").setAttribute("href", code);
 }
 
-// If opened by the bookmarklet (#clip=...), auto-save the clipped selection.
+// If opened by the bookmarklet (#clip=...), save the clipped selection.
+// The hash is attacker-controllable (anyone can craft a #clip link), so
+// confirm with the user before ingesting to prevent drive-by store poisoning.
 async function handleClipFromHash() {
   const h = new URLSearchParams(location.hash.slice(1));
   const clip = h.get("clip");
   if (!clip) return;
   history.replaceState(null, "", location.pathname + location.search);
+  const title = h.get("t") || "웹 클립";
+  const src = h.get("u") || "";
+  const preview = clip.slice(0, 200) + (clip.length > 200 ? "…" : "");
+  if (!confirm(`이 클립을 저장할까요?\n\n제목: ${title}\n출처: ${src || "(없음)"}\n\n${preview}`)) return;
   await guardedIngest(async () => {
-    const parsed = ex.fromClip(h.get("t") || "웹 클립", h.get("u") || "", clip);
+    const parsed = ex.fromClip(title, src, clip);
     await ingest(parsed);
   });
 }

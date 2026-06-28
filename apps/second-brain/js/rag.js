@@ -42,16 +42,22 @@ export async function ask(query, { k = 6, onToken } = {}) {
     if (onToken) {
       // Streaming path: yield tokens as they arrive.
       const stream = await window.puter.ai.chat(prompt, { stream: true });
-      for await (const part of stream) {
-        const t = part?.text ?? part?.delta ?? (typeof part === "string" ? part : "");
-        if (t) {
-          answer += t;
+      if (stream && typeof stream[Symbol.asyncIterator] === "function") {
+        for await (const part of stream) {
+          const t = part?.text ?? part?.delta ?? (typeof part === "string" ? part : "");
+          if (t) {
+            answer += t;
+            onToken(answer);
+          }
+        }
+        if (!answer) {
+          // Iterable yielded nothing; fall back to a single call.
+          answer = normalize(await window.puter.ai.chat(prompt));
           onToken(answer);
         }
-      }
-      if (!answer) {
-        // Some providers don't stream; fall back to a single call.
-        answer = normalize(await window.puter.ai.chat(prompt));
+      } else {
+        // Provider ignored { stream: true } and returned a non-iterable result.
+        answer = normalize(stream);
         onToken(answer);
       }
     } else {
