@@ -29,6 +29,9 @@ const LS = {
   // Whether to persist the passphrase on this device (off => session-only).
   get syncRemember() { return lsGet("sb.syncRemember", "1") === "1"; },
   set syncRemember(v) { lsSet("sb.syncRemember", v ? "1" : "0"); },
+  // Cluster sensitivity (slider value 40–85 -> cosine threshold 0.40–0.85).
+  get clusterThreshold() { return parseInt(lsGet("sb.clusterThreshold", "60"), 10); },
+  set clusterThreshold(v) { lsSet("sb.clusterThreshold", String(v)); },
 };
 
 const $ = (s) => document.querySelector(s);
@@ -219,7 +222,7 @@ async function renderClusters() {
   $("#clusterInfo").textContent = "분석 중…";
   const [docs, vecs] = await Promise.all([db.getDocs(), docVectors()]);
   const tagsById = new Map(docs.map((d) => [d.id, d.tags || []]));
-  const groups = clusterDocs(vecs);
+  const groups = clusterDocs(vecs, LS.clusterThreshold / 100);
   const multi = groups.filter((g) => g.length > 1);
   const singles = groups.filter((g) => g.length === 1).flat();
   $("#clusterInfo").textContent = `${vecs.length}개 노트 · ${multi.length}개 묶음 · 단독 ${singles.length}`;
@@ -281,9 +284,13 @@ async function startSync({ silent = false, pass } = {}) {
       // Use the explicit passphrase (manual connect) or the remembered one
       // (auto-resume). When "remember" is off, LS.syncPass is empty by design.
       passphrase: pass != null ? pass : LS.syncPass,
-      onChange: async () => {
+      onChange: async (r) => {
         await renderDocs();
-        toast("다른 기기 변경사항을 받았습니다.");
+        toast(
+          r?.removed
+            ? `다른 기기 변경 반영 (삭제 ${r.removed}건 포함)`
+            : "다른 기기 변경사항을 받았습니다."
+        );
       },
     });
     await sync.init();
@@ -518,9 +525,16 @@ function setup() {
   });
 
   // Clustering view.
+  $("#clusterThreshold").value = LS.clusterThreshold;
   $("#clusterRefresh").addEventListener("click", async () => {
     await loadModel(); // ensure vectors exist / model warm
     await renderClusters();
+  });
+  let clusterDebounce = null;
+  $("#clusterThreshold").addEventListener("input", (e) => {
+    LS.clusterThreshold = parseInt(e.target.value, 10);
+    clearTimeout(clusterDebounce);
+    clusterDebounce = setTimeout(renderClusters, 250);
   });
 
   // Multi-device sync controls.

@@ -37,6 +37,8 @@ export class Sync {
     this.lastUpdated = null; // server timestamp of the last row we applied/wrote
     this.timer = null;
     this._pulling = null; // in-flight pull() promise, used as a lock
+    this._rt = null; // supabase-js client (realtime), if active
+    this._channel = null;
   }
 
   headers(extra) {
@@ -142,26 +144,62 @@ export class Sync {
     return { ok: true };
   }
 
-  // Near-real-time: poll for remote changes and apply them as they arrive.
-  // Skip a tick if a pull is already running so overlapping ticks can't
-  // double-apply / double-notify.
+  // Pull-and-notify, skipping if a pull is already in flight so overlapping
+  // triggers (interval tick + realtime event) can't double-apply / double-notify.
+  async _tick() {
+    if (this._pulling) return;
+    try {
+      const r = await this.pull();
+      if (r.applied) this.onChange(r);
+    } catch {
+      /* transient network error; keep going */
+    }
+  }
+
+  // Near-real-time: poll on an interval, and additionally subscribe to Supabase
+  // Realtime when available (instant updates). Polling stays as a safety net in
+  // case Realtime isn't enabled on the table or the socket drops.
   start(intervalMs = 8000) {
     this.stop();
-    this.timer = setInterval(async () => {
-      if (this._pulling) return;
-      try {
-        const r = await this.pull();
-        if (r.applied) this.onChange(r);
-      } catch {
-        /* transient network error; keep polling */
-      }
-    }, intervalMs);
+    this.timer = setInterval(() => this._tick(), intervalMs);
+    this.startRealtime();
+  }
+
+  async startRealtime() {
+    try {
+      const { createClient } = await import(
+        "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm"
+      );
+      this._rt = createClient(this.url, this.key, { auth: { persistSession: false } });
+      this._channel = this._rt
+        .channel("brain_sync:" + this.space)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "brain_sync", filter: "space=eq." + this.space },
+          () => this._tick()
+        )
+        .subscribe();
+      return true;
+    } catch {
+      // Realtime unavailable (offline, CDN blocked, table not in publication) —
+      // polling already covers updates.
+      return false;
+    }
   }
 
   stop() {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    if (this._channel) {
+      try {
+        this._rt?.removeChannel(this._channel);
+      } catch {
+        /* ignore */
+      }
+      this._channel = null;
+      this._rt = null;
     }
   }
 }

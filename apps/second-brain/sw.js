@@ -2,7 +2,7 @@
 // Only same-origin app files are cached; CDN libs and the embedding model
 // are handled by the browser's own HTTP/transformers.js cache.
 
-const CACHE = "second-brain-v2";
+const CACHE = "second-brain-v3";
 const SHELL = [
   "./",
   "./index.html",
