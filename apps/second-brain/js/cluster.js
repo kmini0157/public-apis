@@ -85,6 +85,80 @@ export function clusterDocs(docVecs, threshold = 0.6) {
   return [...groups.values()].sort((a, b) => b.length - a.length);
 }
 
+// Normalized mean (centroid) of a set of vectors.
+export function centroid(vectors) {
+  if (!vectors.length) return [];
+  const dim = vectors[0].length;
+  const sum = new Array(dim).fill(0);
+  for (const v of vectors) for (let i = 0; i < dim; i++) sum[i] += v[i];
+  const mean = sum.map((x) => x / vectors.length);
+  let n = 0;
+  for (const x of mean) n += x * x;
+  n = Math.sqrt(n) || 1;
+  return mean.map((x) => x / n);
+}
+
+function leadSentence(text, max = 180) {
+  const clean = (text || "").replace(/\s+/g, " ").trim();
+  const m = clean.match(/^.*?[.!?。？！](\s|$)/);
+  let s = m ? m[0].trim() : clean;
+  if (s.length > max) s = s.slice(0, max).trim() + "…";
+  return s;
+}
+
+// Extractive, on-device cluster summary: take a leading sentence from the most
+// central chunk of each of the k member docs nearest the cluster centroid (one
+// bullet per distinct doc, for coverage). Keyless and language-agnostic.
+export function summarizeCluster(members, chunks, k = 3) {
+  const cen = centroid(members.map((m) => m.vec));
+  if (!cen.length) return [];
+  const memberIds = new Set(members.map((m) => m.docId));
+  const scored = chunks
+    .filter((c) => memberIds.has(c.docId) && Array.isArray(c.vec))
+    .map((c) => ({ c, score: cosine(cen, c.vec) }))
+    .sort((a, b) => b.score - a.score);
+  const picked = [];
+  const usedDocs = new Set();
+  for (const { c } of scored) {
+    if (usedDocs.has(c.docId)) continue; // one line per doc, for coverage
+    usedDocs.add(c.docId);
+    const s = leadSentence(c.text);
+    if (s) picked.push(s);
+    if (picked.length >= k) break;
+  }
+  return picked;
+}
+
+// Find duplicate / near-duplicate docs: same source OR cosine >= threshold.
+// Returns groups of size >= 2 (the candidates to merge/dedupe).
+export function findDuplicates(docVecs, threshold = 0.95) {
+  const n = docVecs.length;
+  const parent = Array.from({ length: n }, (_, i) => i);
+  const find = (x) => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+  const union = (a, b) => {
+    parent[find(a)] = find(b);
+  };
+  const bySource = new Map();
+  for (let i = 0; i < n; i++) {
+    const s = docVecs[i].source;
+    if (!s) continue;
+    if (bySource.has(s)) union(bySource.get(s), i);
+    else bySource.set(s, i);
+  }
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (cosine(docVecs[i].vec, docVecs[j].vec) >= threshold) union(i, j);
+    }
+  }
+  const groups = new Map();
+  for (let i = 0; i < n; i++) {
+    const r = find(i);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(docVecs[i]);
+  }
+  return [...groups.values()].filter((g) => g.length > 1);
+}
+
 // A short label for a cluster: most common auto-tags across its members.
 export function clusterLabel(members, docTagsById) {
   const freq = new Map();

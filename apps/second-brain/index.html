@@ -69,8 +69,13 @@
       .cluster { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
         padding: 10px 12px; margin: 8px 0; }
       .cluster h4 { margin: 0 0 6px; font-size: 13px; color: var(--good); }
-      .cluster .member { font-size: 13px; padding: 2px 0; color: var(--fg); }
+      .cluster .member { font-size: 13px; padding: 2px 0; color: var(--fg);
+        display: flex; gap: 8px; align-items: center; justify-content: space-between; }
       .cluster .member a { color: var(--mut); }
+      .cluster .summary { font-size: 13px; color: var(--mut); margin: 2px 0 8px;
+        border-left: 2px solid var(--accent); padding-left: 8px; }
+      .cluster .member button.keep { font-size: 11px; padding: 2px 8px; flex: 0 0 auto;
+        background: var(--panel); border: 1px solid var(--line); color: var(--accent); border-radius: 8px; }
     </style>
   </head>
   <body>
@@ -175,6 +180,14 @@
             <span class="muted" id="clusterInfo" style="align-self:center">임베딩으로 비슷한 노트를 자동 분류합니다.</span>
           </div>
           <div id="clusters"></div>
+        </details>
+        <details id="dupBox">
+          <summary class="muted">🔁 중복/충돌 정리</summary>
+          <div class="row" style="margin:8px 0;align-items:center">
+            <button id="dupScan" style="flex:0 0 auto">중복 찾기</button>
+            <span class="muted" id="dupInfo" style="align-self:center">같은 출처·거의 동일한 노트를 찾아 하나만 남깁니다.</span>
+          </div>
+          <div id="dups"></div>
         </details>
       </main>
     </div>

@@ -7,7 +7,14 @@ import * as ex from "./extract.js";
 import { ask } from "./rag.js";
 import { Recorder, transcribe } from "./voice.js";
 import { encryptJSON, decryptJSON, isEncrypted } from "./crypto.js";
-import { keywords, docVectors, clusterDocs, clusterLabel } from "./cluster.js";
+import {
+  keywords,
+  docVectors,
+  clusterDocs,
+  clusterLabel,
+  summarizeCluster,
+  findDuplicates,
+} from "./cluster.js";
 import { Sync } from "./sync.js";
 
 const lsGet = (k, d = "") => localStorage.getItem(k) ?? d;
@@ -220,7 +227,8 @@ function addMsg(role, text) {
 
 async function renderClusters() {
   $("#clusterInfo").textContent = "분석 중…";
-  const [docs, vecs] = await Promise.all([db.getDocs(), docVectors()]);
+  const [docs, chunks] = await Promise.all([db.getDocs(), db.getAllChunks()]);
+  const vecs = await docVectors(chunks);
   const tagsById = new Map(docs.map((d) => [d.id, d.tags || []]));
   const groups = clusterDocs(vecs, LS.clusterThreshold / 100);
   const multi = groups.filter((g) => g.length > 1);
@@ -236,12 +244,15 @@ async function renderClusters() {
     return `<div class="member">• ${esc(m.title)}${link}</div>`;
   };
   let html = multi
-    .map(
-      (g) =>
-        `<div class="cluster"><h4>${esc(clusterLabel(g, tagsById))} <span class="muted">(${g.length})</span></h4>${g
-          .map(member)
-          .join("")}</div>`
-    )
+    .map((g) => {
+      const summary = summarizeCluster(g, chunks);
+      const sum = summary.length
+        ? `<div class="summary">${summary.map((s) => `<div>• ${esc(s)}</div>`).join("")}</div>`
+        : "";
+      return `<div class="cluster"><h4>${esc(clusterLabel(g, tagsById))} <span class="muted">(${g.length})</span></h4>${sum}${g
+        .map(member)
+        .join("")}</div>`;
+    })
     .join("");
   if (singles.length) {
     html += `<div class="cluster"><h4 class="muted">단독 노트 <span class="muted">(${singles.length})</span></h4>${singles
@@ -249,6 +260,47 @@ async function renderClusters() {
       .join("")}</div>`;
   }
   $("#clusters").innerHTML = html || '<div class="muted">묶을 노트가 부족합니다.</div>';
+}
+
+// ---- Duplicate / conflict resolution ------------------------------------
+
+async function renderDups() {
+  $("#dupInfo").textContent = "검사 중…";
+  const [docs, vecs] = await Promise.all([db.getDocs(), docVectors()]);
+  const addedById = new Map(docs.map((d) => [d.id, d.addedAt || 0]));
+  const groups = findDuplicates(vecs);
+  $("#dupInfo").textContent = groups.length ? `${groups.length}개 중복 그룹` : "중복 없음 ✓";
+  $("#dups").innerHTML = groups.length
+    ? groups
+        .map((g, gi) => {
+          // newest first, so "keep newest" is the obvious default at the top
+          const sorted = [...g].sort((a, b) => (addedById.get(b.docId) || 0) - (addedById.get(a.docId) || 0));
+          const members = sorted
+            .map((m) => {
+              const when = new Date(addedById.get(m.docId) || 0).toLocaleDateString("ko-KR");
+              return `<div class="member">• ${esc(m.title)} <span class="muted">(${when})</span>
+                <button class="keep" data-keep="${m.docId}" data-group="${gi}">이거 남기고 정리</button></div>`;
+            })
+            .join("");
+          return `<div class="cluster" data-group="${gi}"><h4 class="muted">중복 ${g.length}개</h4>${members}</div>`;
+        })
+        .join("")
+    : '<div class="muted">중복/충돌이 없습니다.</div>';
+  // stash group membership for the merge action
+  renderDups._groups = groups;
+}
+
+async function mergeDupGroup(groupIndex, keepId) {
+  const group = (renderDups._groups || [])[groupIndex];
+  if (!group) return;
+  const toDelete = group.filter((m) => m.docId !== keepId);
+  if (!toDelete.length) return;
+  if (!confirm(`${toDelete.length}개 중복 노트를 삭제하고 1개만 남길까요? (삭제는 다른 기기에도 전파됩니다)`)) return;
+  for (const m of toDelete) await db.deleteDoc(m.docId);
+  await renderDocs();
+  await renderDups();
+  maybeAutoPush();
+  toast(`${toDelete.length}개 중복 정리됨`);
 }
 
 // ---- Multi-device sync state -------------------------------------------
@@ -537,6 +589,16 @@ function setup() {
     clusterDebounce = setTimeout(renderClusters, 250);
   });
 
+  // Duplicate / conflict resolution.
+  $("#dupScan").addEventListener("click", async () => {
+    await loadModel();
+    await renderDups();
+  });
+  $("#dups").addEventListener("click", (e) => {
+    const btn = e.target.closest("button.keep");
+    if (btn) mergeDupGroup(parseInt(btn.dataset.group, 10), btn.dataset.keep);
+  });
+
   // Multi-device sync controls.
   $("#syncUrl").value = LS.syncUrl;
   $("#syncKey").value = LS.syncKey;
@@ -607,6 +669,7 @@ async function handleClipFromHash() {
 (async function init() {
   setup();
   setupBookmarklet();
+  db.gcTombstones().catch(() => {}); // prune old deletion markers
   await renderDocs();
   setStatus("준비됨 (모델은 첫 사용 시 다운로드)");
   await handleClipFromHash();

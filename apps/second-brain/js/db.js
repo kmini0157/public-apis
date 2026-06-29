@@ -74,6 +74,18 @@ export async function putTombstone(t) {
   return reqToPromise((await tx("tombstones", "readwrite")).put(t));
 }
 
+// Garbage-collect deletion markers older than a retention window. After this,
+// a device that's been offline longer than the window could resurrect a since-
+// deleted doc on its next sync — the window is the safety margin for that.
+export async function gcTombstones(maxAgeMs = 90 * 24 * 60 * 60 * 1000, now = Date.now()) {
+  const cutoff = now - maxAgeMs;
+  const old = (await getAllTombstones()).filter((t) => (t.deletedAt || 0) < cutoff);
+  if (!old.length) return 0;
+  const store = await tx("tombstones", "readwrite");
+  await Promise.all(old.map((t) => reqToPromise(store.delete(t.id))));
+  return old.length;
+}
+
 // Remove a doc and its chunks (no tombstone written) — internal helper.
 function removeDocData(docId) {
   return openDB().then(
