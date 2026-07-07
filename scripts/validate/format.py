@@ -43,6 +43,7 @@ def get_categories_content(contents: List[str]) -> Tuple[Categories, CategoriesL
 
     categories = {}
     category_line_num = {}
+    category = None
 
     for line_num, line_content in enumerate(contents):
 
@@ -50,6 +51,11 @@ def get_categories_content(contents: List[str]) -> Tuple[Categories, CategoriesL
             category = line_content.split(anchor)[1].strip()
             categories[category] = []
             category_line_num[category] = line_num
+            continue
+
+        # skip tables that appear before the first category header
+        # (e.g. the sponsor table at the top of the README)
+        if category is None:
             continue
 
         if not line_content.startswith('|') or line_content.startswith('|---'):

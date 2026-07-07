@@ -47,6 +47,17 @@ Join our [Discord server](https://discord.com/invite/hgjA78638n/?utm_source=Gith
 
 <br />
 
+## 🔧 Fork Tools — 이 포크의 편의 도구
+
+이 포크에는 아래 목록(1,500+ APIs)을 훨씬 편하게 쓰기 위한 도구가 추가되어 있습니다. 자세한 사용법은 **[GUIDE.md](GUIDE.md)** 참고.
+
+* 🖥️ **웹 탐색기** — [`index.html`](index.html)을 브라우저로 열면 검색·필터·즐겨찾기·다크모드 지원 (오프라인 동작)
+* ⌨️ **터미널 검색** — `./apis weather --auth no` 처럼 즉시 검색 (의존성 없음)
+* 📊 **구조화 데이터** — [`data/apis.json`](data/apis.json) · [`data/apis.csv`](data/apis.csv)로 프로그램에서 바로 활용
+* 🔄 **데이터 갱신** — `python3 scripts/parse_apis.py` 한 줄로 재생성
+
+<br />
+
 ## Index
 
 * [Animals](#animals)

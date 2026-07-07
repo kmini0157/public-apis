@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Convenience wrapper: search the API list from the repo root.
+exec python3 "$(dirname "$0")/scripts/search_apis.py" "$@"
