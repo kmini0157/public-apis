@@ -177,6 +177,9 @@
             <button id="clusterRefresh" style="flex:0 0 auto">묶기 / 새로고침</button>
             <label class="muted" style="flex:0 0 auto;align-self:center">민감도</label>
             <input type="range" id="clusterThreshold" min="40" max="85" value="60" style="flex:1" />
+            <label class="muted" style="flex:0 0 auto;display:flex;gap:4px;align-items:center">
+              <input type="checkbox" id="clusterAI" style="width:auto" /> AI 다듬기
+            </label>
             <span class="muted" id="clusterInfo" style="align-self:center">임베딩으로 비슷한 노트를 자동 분류합니다.</span>
           </div>
           <div id="clusters"></div>
@@ -185,9 +188,19 @@
           <summary class="muted">🔁 중복/충돌 정리</summary>
           <div class="row" style="margin:8px 0;align-items:center">
             <button id="dupScan" style="flex:0 0 auto">중복 찾기</button>
+            <label class="muted" style="flex:0 0 auto;align-self:center">엄격도</label>
+            <input type="range" id="dupThreshold" min="88" max="99" value="95" style="flex:1" />
             <span class="muted" id="dupInfo" style="align-self:center">같은 출처·거의 동일한 노트를 찾아 하나만 남깁니다.</span>
           </div>
           <div id="dups"></div>
+        </details>
+        <details id="graphBox">
+          <summary class="muted">🕸 그래프 뷰 (노트 유사도 네트워크)</summary>
+          <div class="row" style="margin:8px 0;align-items:center">
+            <button id="graphDraw" style="flex:0 0 auto">그리기 / 새로고침</button>
+            <span class="muted" id="graphInfo" style="align-self:center">노트가 점, 유사한 노트끼리 선으로 이어집니다 (민감도 슬라이더 공유).</span>
+          </div>
+          <canvas id="graphCanvas" style="width:100%;background:var(--card);border:1px solid var(--line);border-radius:12px"></canvas>
         </details>
       </main>
     </div>

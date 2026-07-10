@@ -2,7 +2,7 @@
 // Only same-origin app files are cached; CDN libs and the embedding model
 // are handled by the browser's own HTTP/transformers.js cache.
 
-const CACHE = "second-brain-v4";
+const CACHE = "second-brain-v5";
 const SHELL = [
   "./",
   "./index.html",
@@ -18,6 +18,7 @@ const SHELL = [
   "./js/crypto.js",
   "./js/cluster.js",
   "./js/sync.js",
+  "./js/graph.js",
 ];
 
 self.addEventListener("install", (e) => {

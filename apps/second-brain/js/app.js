@@ -15,6 +15,7 @@ import {
   summarizeCluster,
   findDuplicates,
 } from "./cluster.js";
+import { buildGraph, layoutGraph } from "./graph.js";
 import { Sync } from "./sync.js";
 
 const lsGet = (k, d = "") => localStorage.getItem(k) ?? d;
@@ -39,6 +40,12 @@ const LS = {
   // Cluster sensitivity (slider value 40–85 -> cosine threshold 0.40–0.85).
   get clusterThreshold() { return parseInt(lsGet("sb.clusterThreshold", "60"), 10); },
   set clusterThreshold(v) { lsSet("sb.clusterThreshold", String(v)); },
+  // Duplicate-detection strictness (88–99 -> cosine 0.88–0.99).
+  get dupThreshold() { return parseInt(lsGet("sb.dupThreshold", "95"), 10); },
+  set dupThreshold(v) { lsSet("sb.dupThreshold", String(v)); },
+  // Optional LLM polish for cluster summaries (sends bullets to Puter.js).
+  get clusterAI() { return lsGet("sb.clusterAI") === "1"; },
+  set clusterAI(v) { lsSet("sb.clusterAI", v ? "1" : "0"); },
 };
 
 const $ = (s) => document.querySelector(s);
@@ -243,11 +250,13 @@ async function renderClusters() {
     const link = isUrl ? ` <a href="${esc(m.source)}" target="_blank" rel="noopener">↗</a>` : "";
     return `<div class="member">• ${esc(m.title)}${link}</div>`;
   };
+  const summaries = [];
   let html = multi
-    .map((g) => {
+    .map((g, gi) => {
       const summary = summarizeCluster(g, chunks);
+      summaries[gi] = summary;
       const sum = summary.length
-        ? `<div class="summary">${summary.map((s) => `<div>• ${esc(s)}</div>`).join("")}</div>`
+        ? `<div class="summary" id="csum-${gi}">${summary.map((s) => `<div>• ${esc(s)}</div>`).join("")}</div>`
         : "";
       return `<div class="cluster"><h4>${esc(clusterLabel(g, tagsById))} <span class="muted">(${g.length})</span></h4>${sum}${g
         .map(member)
@@ -260,6 +269,30 @@ async function renderClusters() {
       .join("")}</div>`;
   }
   $("#clusters").innerHTML = html || '<div class="muted">묶을 노트가 부족합니다.</div>';
+
+  // Optional cloud polish (opt-in): rewrite each cluster's extractive bullets
+  // into one tight sentence via Puter.js. Capped, fail-soft — the on-device
+  // extractive summary stays if the call fails or the view was re-rendered.
+  if (LS.clusterAI && window.puter?.ai?.chat) {
+    multi.slice(0, 4).forEach(async (g, gi) => {
+      const el = document.getElementById("csum-" + gi);
+      const bullets = summaries[gi];
+      if (!el || !bullets?.length) return;
+      try {
+        const res = await window.puter.ai.chat(
+          "다음 발췌문들을 한국어 한 문장으로 자연스럽게 요약해줘. 요약문만 출력해:\n" +
+            bullets.join("\n")
+        );
+        const text = (typeof res === "string" ? res : res?.message?.content ?? res?.text ?? "")
+          .trim();
+        if (text && document.getElementById("csum-" + gi) === el) {
+          el.innerHTML = `<div>✨ ${esc(text)}</div>`;
+        }
+      } catch {
+        /* keep the extractive summary */
+      }
+    });
+  }
 }
 
 // ---- Duplicate / conflict resolution ------------------------------------
@@ -268,7 +301,7 @@ async function renderDups() {
   $("#dupInfo").textContent = "검사 중…";
   const [docs, vecs] = await Promise.all([db.getDocs(), docVectors()]);
   const addedById = new Map(docs.map((d) => [d.id, d.addedAt || 0]));
-  const groups = findDuplicates(vecs);
+  const groups = findDuplicates(vecs, LS.dupThreshold / 100);
   $("#dupInfo").textContent = groups.length ? `${groups.length}개 중복 그룹` : "중복 없음 ✓";
   $("#dups").innerHTML = groups.length
     ? groups
@@ -301,6 +334,54 @@ async function mergeDupGroup(groupIndex, keepId) {
   await renderDups();
   maybeAutoPush();
   toast(`${toDelete.length}개 중복 정리됨`);
+}
+
+// ---- Graph view (similarity network) ------------------------------------
+
+async function renderGraph() {
+  $("#graphInfo").textContent = "계산 중…";
+  const vecs = await docVectors();
+  if (vecs.length < 2) {
+    $("#graphInfo").textContent = "노트가 2개 이상 필요합니다.";
+    return;
+  }
+  const canvas = $("#graphCanvas");
+  const cssWidth = canvas.clientWidth || 800;
+  const cssHeight = Math.max(320, Math.min(560, cssWidth * 0.6));
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = cssWidth * dpr;
+  canvas.height = cssHeight * dpr;
+  canvas.style.height = cssHeight + "px";
+
+  const { nodes, edges } = buildGraph(vecs, LS.clusterThreshold / 100);
+  const pos = layoutGraph(nodes, edges, { width: cssWidth, height: cssHeight });
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+  // Edges first, opacity by similarity.
+  for (const e of edges) {
+    ctx.strokeStyle = `rgba(122,162,255,${(0.15 + 0.6 * (e.w - 0.4)).toFixed(2)})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(pos[e.a].x, pos[e.a].y);
+    ctx.lineTo(pos[e.b].x, pos[e.b].y);
+    ctx.stroke();
+  }
+  // Nodes + truncated labels.
+  const connected = new Set(edges.flatMap((e) => [e.a, e.b]));
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "center";
+  nodes.forEach((n, i) => {
+    ctx.fillStyle = connected.has(i) ? "#7aa2ff" : "#93a0b4";
+    ctx.beginPath();
+    ctx.arc(pos[i].x, pos[i].y, 5, 0, 2 * Math.PI);
+    ctx.fill();
+    const label = (n.title || "").length > 14 ? n.title.slice(0, 14) + "…" : n.title || "";
+    ctx.fillStyle = "#93a0b4";
+    ctx.fillText(label, pos[i].x, pos[i].y - 9);
+  });
+  $("#graphInfo").textContent = `${nodes.length}개 노트 · ${edges.length}개 연결 (임계 ${(LS.clusterThreshold / 100).toFixed(2)})`;
 }
 
 // ---- Multi-device sync state -------------------------------------------
@@ -578,26 +659,37 @@ function setup() {
 
   // Clustering view.
   $("#clusterThreshold").value = LS.clusterThreshold;
-  $("#clusterRefresh").addEventListener("click", async () => {
-    await loadModel(); // ensure vectors exist / model warm
-    await renderClusters();
-  });
+  // Clustering reads the vectors already stored with each chunk, so no model
+  // download is needed here.
+  $("#clusterRefresh").addEventListener("click", () => renderClusters());
   let clusterDebounce = null;
   $("#clusterThreshold").addEventListener("input", (e) => {
     LS.clusterThreshold = parseInt(e.target.value, 10);
     clearTimeout(clusterDebounce);
     clusterDebounce = setTimeout(renderClusters, 250);
   });
+  $("#clusterAI").checked = LS.clusterAI;
+  $("#clusterAI").addEventListener("change", (e) => {
+    LS.clusterAI = e.target.checked;
+    if ($("#clusters").innerHTML) renderClusters();
+  });
 
   // Duplicate / conflict resolution.
-  $("#dupScan").addEventListener("click", async () => {
-    await loadModel();
-    await renderDups();
+  $("#dupScan").addEventListener("click", () => renderDups());
+  $("#dupThreshold").value = LS.dupThreshold;
+  let dupDebounce = null;
+  $("#dupThreshold").addEventListener("input", (e) => {
+    LS.dupThreshold = parseInt(e.target.value, 10);
+    clearTimeout(dupDebounce);
+    dupDebounce = setTimeout(renderDups, 250);
   });
   $("#dups").addEventListener("click", (e) => {
     const btn = e.target.closest("button.keep");
     if (btn) mergeDupGroup(parseInt(btn.dataset.group, 10), btn.dataset.keep);
   });
+
+  // Graph view.
+  $("#graphDraw").addEventListener("click", () => renderGraph());
 
   // Multi-device sync controls.
   $("#syncUrl").value = LS.syncUrl;
